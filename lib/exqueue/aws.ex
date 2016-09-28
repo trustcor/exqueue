@@ -86,19 +86,6 @@ defmodule ExQueue.Aws do
     queue_poller(recv, qurl, region, access, secret, max_mess, wait, mangle_attrs)
   end
 
-  defp process_message(%{ "Message" => m }, true) do
-    # fake attributes, if not there
-    %{ "body" => m,
-       "attributes" => %{
-         "nonce" => :crypto.strong_rand_bytes(16) |> Base.encode16(case: :lower),
-         "node" => "unknown",
-         "encoding" => "raw",
-         "timestamp" => DateTime.utc_now |> DateTime.to_iso8601,
-       }
-    } |>
-      Poison.encode!
-  end
-
   defp process_message(%{ "Message" => m,
                           "MessageAttributes" => %{
                             "Encoding" => %{ "Value" => enc} ,
@@ -113,6 +100,19 @@ defmodule ExQueue.Aws do
          "node" => node,
          "encoding" => enc,
          "timestamp" => ts,
+       }
+    } |>
+      Poison.encode!
+  end
+
+  defp process_message(%{ "Message" => m }, true) do
+    # fake attributes, if not there
+    %{ "body" => m,
+       "attributes" => %{
+         "nonce" => :crypto.strong_rand_bytes(16) |> Base.encode16(case: :lower),
+         "node" => "unknown",
+         "encoding" => "raw",
+         "timestamp" => DateTime.utc_now |> DateTime.to_iso8601,
        }
     } |>
       Poison.encode!
