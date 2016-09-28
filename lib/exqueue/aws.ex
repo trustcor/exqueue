@@ -1,14 +1,25 @@
 defmodule ExQueue.AwsSup do
   use Supervisor
 
-  def start_link(args) do
-    Supervisor.start_link(__MODULE__, [args])
+  def init(_args) do
+    {:ok, []}
   end
 
-  def init([[cf, qa]]) do
-    children = Enum.map(cf, fn l -> worker(ExQueue.Aws, [[l, qa]], id: Map.get(l, "name")) end)
+  def start_link([cf, qa]) do
+    c = [worker(ExQueue.Aws, [], restart: :transient)]
+    {:ok, sup_pid} = Supervisor.start_link(c, strategy: :simple_one_for_one)
+    Agent.update(qa, fn m -> Map.put(m, :aws, sup_pid) end)
+    add_config(cf, qa)
+    {:ok, sup_pid}
+  end
 
-    supervise(children, strategy: :one_for_one)
+  def cstart(sup_pid, cf, qa) do
+    {:ok, cpid} = Supervisor.start_child(sup_pid, [cf, qa])
+  end
+
+  def add_config(cf, qa) do
+    sup_pid = Agent.get(qa, fn m -> Map.get(m, :aws) end)
+    Enum.map(cf, fn l -> cstart(sup_pid, l, qa) end)
   end
 end
 
@@ -217,7 +228,7 @@ defmodule ExQueue.Aws do
    end
   end
 
-  def start_link([cf = %{ "name" => n}, qa]) when is_binary(n) do
+  def start_link(cf = %{ "name" => n}, qa) when is_binary(n) do
     sname = (to_string(__MODULE__) <> "." <> n) |> String.to_atom
     GenServer.start_link(__MODULE__, [cf,sname,qa], name: sname)
   end

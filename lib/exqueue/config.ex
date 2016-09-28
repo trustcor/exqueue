@@ -17,4 +17,8 @@ defmodule ExQueue.Config do
     end
   end
 
+  def read_config(spec) do
+    read_config(spec, fn x -> x end)
+  end
+
 end

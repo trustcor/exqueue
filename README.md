@@ -73,16 +73,22 @@ An example configuration looks like this:
 
 
    ```iex
-   iex(1)> ExQueue.main(["-c", "config/config.yml"])
+   iex(1)> ExQueue.start(:normal)
    {:ok, #PID<0.250.0>}
    
    iex(2)> ExQueue.Queue.queues
+   [] { _no queues defined yet_ }
+   
+   iex(3)> ExQueue.add_yaml_file_config("config/config.yml")
+   [ok: #PID<0.288.0>, ok: #PID<0.295.0>]
+   
+   iex(4)> ExQueue.Queue.queues
    ["amqp1", "awstest-use1", "localq"]
    
-   iex(3)> ExQueue.Queue.publish(["amqp1", "awstest-use1"], "Queue message 1")
+   iex(5)> ExQueue.Queue.publish(["amqp1", "awstest-use1"], "Queue message 1")
    [:ok, :ok]
    
-   iex(4)> r = ExQueue.Queue.receive_messages(["amqp1", "awstest-use1"], 5)
+   iex(6)> r = ExQueue.Queue.receive_messages(["amqp1", "awstest-use1"], 5)
     # 5 messages per driver
     [duplicate: %{"awstest-use1" => ["AQEBywW1ZhZ6mVJDwKKV+vdrvEQ+RURlhXDln8kzAIvajtWS7iQ9TUJMMfECsCxFuwiCQTXCvGhAoC6E/a9Qc3rt3JgDstrsnTPhu4LUmqgZAaZPT0d/4hAdgOHCaKbzPZ75pzXu8alz0wwrGE5o54jfxVSOvCuHbCC8LD5r+Rjd2//uBfYWW8ApmfRpmujR0wAySiUAHgXu1FRbLZZr+HAdHF3gPrnkFzwQjHNizc4JFUqEHRAj0SGy0M9uk5I5Bs3e0UZb5kUmNuLEyBObC3Zz6i2SbgSxlfZ30aTVwtXRe6ZyNAJ9zAezMX7L4j9gTWLkZK7irAO7V2jErdNL8/J8szPR5vKBx/RgSV3FtMGQXfVnvoXh2HjoNHQD+X9brRYE,16565933-cdbb-4a76-8aa5-4c810c64b119"]},
     ok: %{"amqp1" => [{1, "Queue message 1",
@@ -90,25 +96,25 @@ An example configuration looks like this:
        "nonce" => "55d4c58d09c4fc72dc58a77032da4d6d",
        "timestamp" => "2016-09-26T12:52:59.638047Z"}}]}]
        
-   iex(5)> {_id, body, attrs} = get_in(r, [:ok, "amqp1"]) |> List.first
+   iex(7)> {_id, body, attrs} = get_in(r, [:ok, "amqp1"]) |> List.first
    {1, "Queue message 1",
    %{"encoding" => "raw",
    "node" => "mynode",
    "nonce" => "55d4c58d09c4fc72dc58a77032da4d6d",
    "timestamp" => "2016-09-26T12:52:59.638047Z"}}
    
-   iex(6)> body
+   iex(8)> body
    "Queue message 1"
    
-   iex(7)> ql = ExQueue.Queue.qids(r)
+   iex(9)> ql = ExQueue.Queue.qids(r)
     %{"amqp1" => [1],
     "awstest-use1" =>
     ["AQEBywW1ZhZ6mVJDwKKV+vdrvEQ+RURlhXDln8kzAIvajtWS7iQ9TUJMMfECsCxFuwiCQTXCvGhAoC6E/a9Qc3rt3JgDstrsnTPhu4LUmqgZAaZPT0d/4hAdgOHCaKbzPZ75pzXu8alz0wwrGE5o54jfxVSOvCuHbCC8LD5r+Rjd2//uBfYWW8ApmfRpmujR0wAySiUAHgXu1FRbLZZr+HAdHF3gPrnkFzwQjHNizc4JFUqEHRAj0SGy0M9uk5I5Bs3e0UZb5kUmNuLEyBObC3Zz6i2SbgSxlfZ30aTVwtXRe6ZyNAJ9zAezMX7L4j9gTWLkZK7irAO7V2jErdNL8/J8szPR5vKBx/RgSV3FtMGQXfVnvoXh2HjoNHQD+X9brRYE,16565933-cdbb-4a76-8aa5-4c810c64b119"]}
    
-   iex(8)> ExQueue.Queue.ack(ql)
+   iex(10)> ExQueue.Queue.ack(ql)
    %{"amqp1" => :ok, "awstest-use1" => :ok}
    
-   iex(9)> r = ExQueue.Queue.receive_messages(["amqp1", "awstest-use1"])
+   iex(11)> r = ExQueue.Queue.receive_messages(["amqp1", "awstest-use1"])
    []
    ```
    
