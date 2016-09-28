@@ -107,7 +107,7 @@ defmodule ExQueue.Queue do
           log(:warn, "Time difference = #{diff}, max skew allowed = #{skew}")
           :invalid # date is too old or too new
         else
-          case ConCache.insert_new(:nonce_cache, n, %ConCache.Item{value: true, ttl: :timer.seconds(skew * 2)}) do
+          case ConCache.insert_new(:exqueue_nonce_cache, n, %ConCache.Item{value: true, ttl: :timer.seconds(skew * 2)}) do
             {:error, _} -> :duplicate
             _ -> :ok
           end

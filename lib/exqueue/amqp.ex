@@ -12,13 +12,13 @@ defmodule ExQueue.AmqpSup do
     {:ok, sup_pid}
   end
 
-  def cstart(sup_pid, args, sargs) do
-    {:ok, cpid} = Supervisor.start_child(sup_pid, args)
+  def cstart(sup_pid, cf, qa) do
+    {:ok, _cpid} = Supervisor.start_child(sup_pid, [cf, qa])
   end
 
   def add_config(cf, qa) do
     sup_pid = Agent.get(qa, fn m -> Map.get(m, :amqp) end)
-    Enum.map(cf, fn l -> cstart(sup_pid, [l, qa], [id: Map.get(l, "name")]) end)
+    Enum.map(cf, fn l -> cstart(sup_pid, l, qa) end)
   end
 end
 

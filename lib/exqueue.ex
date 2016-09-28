@@ -35,7 +35,7 @@ defmodule ExQueue do
     ttl = get_in_default(cfg, ["config", "nonce_ttl"], Application.get_env(:exqueue, :nonce_ttl, 7200))
 
     children = [
-      worker(ConCache, [[ttl_check: :timer.seconds(5), ttl: :timer.seconds(ttl)], [name: :nonce_cache]]),
+      worker(ConCache, [[ttl_check: :timer.seconds(5), ttl: :timer.seconds(ttl)], [name: :exqueue_nonce_cache]]),
       worker(ExQueue.MessageStash, [[]]),
       worker(ExQueue.LocalSup, [[Map.get(cfg, "local", %{}), qa]]),
       worker(ExQueue.AmqpSup, [[Map.get(cfg, "amqp", %{}), qa]]),
