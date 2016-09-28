@@ -14,7 +14,7 @@ defmodule ExQueue.AwsSup do
   end
 
   def cstart(sup_pid, cf, qa) do
-    {:ok, cpid} = Supervisor.start_child(sup_pid, [cf, qa])
+    {:ok, _cpid} = Supervisor.start_child(sup_pid, [cf, qa])
   end
 
   def add_config(cf, qa) do
@@ -37,6 +37,7 @@ defmodule ExQueue.Aws do
     secret = get_in(cf, ["secret_access_key"])
     wait = Map.get(cf, "wait", 20)
     max_mess = Map.get(cf, "max_messages", 10)
+    mangle_attrs = Map.get(cf, "mangle_attrs", true)
 
     node = Map.get(cf, "node", Agent.get(qa, fn m -> Map.get(m, :node) end))
     {:ok, tarn} = create_topic(topic, region, access, secret)
@@ -44,7 +45,7 @@ defmodule ExQueue.Aws do
       qname = topic <> "_" <> node
       {:ok, q} = create_and_subscribe_queue({:ok, tarn}, qname, region, access, secret, ttl: Map.get(cf, "expire", 3600))
       me = self
-      spawn_link(fn -> queue_poller(me, q, region, access, secret, max_mess, wait) end)
+      spawn_link(fn -> queue_poller(me, q, region, access, secret, max_mess, wait, mangle_attrs) end)
       q
     else
       nil
@@ -56,7 +57,7 @@ defmodule ExQueue.Aws do
             buffer:  ExQueue.MessageStash.get_value(name) }}
   end
 
-  defp queue_poller(recv, qurl, region, access, secret, max_mess, wait) do
+  defp queue_poller(recv, qurl, region, access, secret, max_mess, wait, mangle_attrs) do
     case (ExAws.SQS.receive_message(qurl, wait_time_seconds: wait, max_number_of_messages: max_mess) |>
       ExAws.request(region: region, access_key_id: access, secret_access_key: secret) ) do
       {:ok, %{body: b, status_code: 200}} ->
@@ -70,7 +71,7 @@ defmodule ExQueue.Aws do
           Enum.map(fn {r, id, msg} -> {r, id, Poison.decode(msg)} end) |>
           Enum.reject(fn {_r, _i, {:error, _e}} -> true
                          {_r, _i, {:ok, _}} -> false end) |>
-          Enum.map(fn {r, i, {:ok, m}} -> {r, i, process_message(m)} end) |>
+          Enum.map(fn {r, i, {:ok, m}} -> {r, i, process_message(m, mangle_attrs)} end) |>
           Enum.reject(fn {_r, _i, m} -> m == nil end) |>
           Enum.map(fn {r, i, m} -> {"#{r},#{i}", m} end)
 
@@ -82,7 +83,7 @@ defmodule ExQueue.Aws do
         log(:info, "Cannot receive message: #{inspect(e)}")
         nil
     end
-    queue_poller(recv, qurl, region, access, secret, max_mess, wait)
+    queue_poller(recv, qurl, region, access, secret, max_mess, wait, mangle_attrs)
   end
 
   defp process_message(%{ "Message" => m,
@@ -92,7 +93,7 @@ defmodule ExQueue.Aws do
                             "Node" => %{ "Value" => node},
                             "Timestamp" => %{ "Value" => ts}
                           }
-                        } ) do
+                        }, _ma ) do
     %{ "body" => m,
        "attributes" => %{
          "nonce" => nonce,
@@ -104,7 +105,20 @@ defmodule ExQueue.Aws do
       Poison.encode!
   end
 
-  defp process_message(e) do
+  defp process_message(%{ "Message" => m }, true) do
+    # fake attributes, if not there
+    %{ "body" => m,
+       "attributes" => %{
+         "nonce" => :crypto.strong_rand_bytes(16) |> Base.encode16(case: :lower),
+         "node" => "unknown",
+         "encoding" => "raw",
+         "timestamp" => DateTime.utc_now |> DateTime.to_iso8601,
+       }
+    } |>
+      Poison.encode!
+  end
+
+  defp process_message(e, _ma) do
     log(:warn, "Processing bad message: #{inspect(e, pretty: true)}")
     nil
   end
