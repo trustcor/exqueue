@@ -20,12 +20,11 @@ defmodule ExQueue.Mixfile do
 
   defp deps do
     [
-      {:yaml_elixir, "~> 1.0.0"},
-      {:yamerl, github: "yakaz/yamerl"},
+      {:yaml_elixir, "~> 1.2.1"},
       {:elmdb, "~> 0.4.1"},
       {:con_cache, "~> 0.11.1"},
       {:poison, "~> 2.2.0"},
-      {:timex, "~> 3.0"},
+      {:timex, "~> 3.1.0"},
       {:amqp_client, git: "https://github.com/dsrosario/amqp_client.git", branch: "erlang_otp_19", override: true},
       {:amqp, "~> 0.1.4"},
       {:ex_aws, "~> 1.0.0-beta5"},
