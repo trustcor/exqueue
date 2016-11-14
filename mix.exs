@@ -13,7 +13,7 @@ defmodule ExQueue.Mixfile do
 
   def application do
     [applications: [:logger, :yamerl, :yaml_elixir, :con_cache, :poison,
-                    :timex, :amqp, :ex_aws, :sweet_xml, :briefly]
+                    :timex, :amqp, :ex_aws, :sweet_xml, :briefly],
     mod: {ExQueue, %{}}
     ]
   end
