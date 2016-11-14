@@ -7,14 +7,14 @@ defmodule ExQueue.Mixfile do
      elixir: "~> 1.3",
      build_embedded: Mix.env == :prod,
      start_permanent: Mix.env == :prod,
-     # escript: [main_module: ExQueue],
+     escript: [main_module: ExQueue],
      deps: deps()]
   end
 
   def application do
     [applications: [:logger, :yamerl, :yaml_elixir, :con_cache, :poison,
                     :timex, :amqp, :ex_aws, :sweet_xml, :briefly]
-    # mod: {ExQueue, %{}}
+    mod: {ExQueue, %{}}
     ]
   end
 
