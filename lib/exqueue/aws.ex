@@ -8,7 +8,7 @@ defmodule ExQueue.AwsSup do
   def start_link([cf, qa]) do
     c = [worker(ExQueue.Aws, [], restart: :transient)]
     {:ok, sup_pid} = Supervisor.start_link(c, strategy: :simple_one_for_one)
-    Agent.update(qa, fn m -> Map.put(m, :aws, sup_pid) end)
+    Agent.update(qa, fn m -> Map.put(m, :aws_sup_pid, sup_pid) end)
     add_config(cf, qa)
     {:ok, sup_pid}
   end
@@ -18,8 +18,7 @@ defmodule ExQueue.AwsSup do
   end
 
   def add_config(cf, qa) do
-    sup_pid = Agent.get(qa, fn m -> Map.get(m, :aws) end)
-    Enum.map(cf, fn l -> cstart(sup_pid, l, qa) end)
+    Enum.map(cf, fn l -> cstart(Agent.get(qa, fn m -> Map.get(m, :aws_sup_pid) end), l, qa) end)
   end
 end
 
@@ -29,13 +28,17 @@ defmodule ExQueue.Aws do
 
   use GenServer
 
-  def init([cf,sname,qa]) do
+  def init([cf, sname, qa]) do
     name = Map.get(cf, "name")
     topic = Map.get(cf, "topic", name)
     region = Map.get(cf, "region", "us-east-1")
     access = get_in(cf, ["access_key_id"])
     secret = get_in(cf, ["secret_access_key"])
     wait = Map.get(cf, "wait", 20)
+    buffer_timeout = Map.get(cf, "buffer_timeout", 1800) # messages not claimed in 1800 secs get zapped
+    buffer_purge_period = Map.get(cf, "buffer_purge_period", 60) # run purge every 60 seconds
+    stats_log_period = Map.get(cf, "stats_log_period", 60)
+    stats_log_level = Map.get(cf, "stats_log_level", "debug") |> log_level
     max_mess = Map.get(cf, "max_messages", 10)
     mangle_attrs = Map.get(cf, "mangle_attrs", true)
 
@@ -51,22 +54,45 @@ defmodule ExQueue.Aws do
       nil
     end
     Agent.update(qa, fn m -> put_in(m,[:queues, name], %{ server: sname }) end)
-
-    {:ok, %{ag: qa, region: region, access: access, secret: secret, tarn: tarn, name: name,
-            qurl: qurl,
+    me = self()
+    spawn_link(fn -> purger(me, buffer_purge_period) end)
+    spawn_link(fn -> stats_log(me, name, stats_log_period, stats_log_level) end)
+    {:ok, %{region: region, access: access, secret: secret, tarn: tarn, name: name,
+            qurl: qurl, buffer_timeout: buffer_timeout,
             buffer:  ExQueue.MessageStash.get_value(name) }}
   end
 
+  defp log_level(s) when is_binary(s) do
+    case String.downcase(s) do
+      "debug" -> :debug
+      "info" -> :info
+      "warn" -> :warn
+      "error" -> :error
+      _ -> :debug
+    end
+  end
+
+  defp purger(parent, period) do
+    :timer.sleep(:timer.seconds(period))
+    GenServer.call(parent, :purge)
+    purger(parent, period)
+  end
+
+  defp stats_log(parent, name, period, level) when is_binary(name) and is_atom(level) do
+    :timer.sleep(:timer.seconds(period))
+    stats = GenServer.call(parent, :stats)
+    log(level, "Queue #{name}: statistics: #{inspect(stats)}")
+    stats_log(parent, name, period, level)
+  end
+
   defp queue_poller(recv, qurl, region, access, secret, max_mess, wait, mangle_attrs) do
-    case (ExAws.SQS.receive_message(qurl, wait_time_seconds: wait, max_number_of_messages: max_mess) |>
+    # log(:debug, "Polling queue #{qurl}")
+    case (ExAws.SQS.receive_message(qurl |> qname, wait_time_seconds: wait, max_number_of_messages: max_mess) |>
       ExAws.request(region: region, access_key_id: access, secret_access_key: secret) ) do
-      {:ok, %{body: b, status_code: 200}} ->
-        m = Enum.map(1..max_mess, fn i ->
-          {
-            xpath(b, ~x"//ReceiveMessageResponse/ReceiveMessageResult/Message[#{i}]/ReceiptHandle/text()"s),
-            xpath(b, ~x"//ReceiveMessageResponse/ReceiveMessageResult/Message[#{i}]/MessageId/text()"s),
-            xpath(b, ~x"//ReceiveMessageResponse/ReceiveMessageResult/Message[#{i}]/Body/text()"s)
-          } end) |>
+      {:ok, %{body: %{messages: mess}, status_code: 200}} ->
+
+        m = Enum.map(mess, fn %{body: b, message_id: mid, receipt_handle: rh} ->
+          { rh, mid, b } end) |>
           Enum.reject(fn {r, _, _} -> r == "" end) |>
           Enum.map(fn {r, id, msg} -> {r, id, Poison.decode(msg)} end) |>
           Enum.reject(fn {_r, _i, {:error, _e}} -> true
@@ -125,9 +151,9 @@ defmodule ExQueue.Aws do
 
   defp create_topic(topic, region, access, secret) do
     case ExAws.SNS.create_topic(topic) |> ExAws.request(region: region, access_key_id: access, secret_access_key: secret) do
-      {:ok, %{body: b, status_code: 200}} ->
-        log(:debug, "CreateTopic #{inspect(topic)} in #{region}: OK")
-        {:ok, xpath(b, ~x"//CreateTopicResponse/CreateTopicResult/TopicArn/text()"s)}
+      {:ok, %{body: %{topic_arn: tarn} = b, status_code: 200}} ->
+        log(:debug, "CreateTopic response in #{region}: #{inspect(b, pretty: true)}")
+        {:ok, tarn}
       {:error, {:http_error, err, _msg}} ->
         {:error, "Unable to create topic in #{region}: #{err}"}
     end
@@ -144,9 +170,7 @@ defmodule ExQueue.Aws do
   end
 
   defp create_queue_result({:error, e}), do: {:error, e}
-  defp create_queue_result({:ok, %{body: b, status_code: 200}}) do
-    {:ok, xpath(b, ~x"//CreateQueueResponse/CreateQueueResult/QueueUrl/text()"s) |> qname}
-  end
+  defp create_queue_result({:ok, %{body: %{queue_url: qurl}, status_code: 200}}), do: {:ok, qurl}
 
   defp qname(nil), do: nil
   defp qname(qstr) do
@@ -154,13 +178,12 @@ defmodule ExQueue.Aws do
   end
 
   defp queue_arn(qurl, region, access, secret) when is_binary(qurl) do
-    case (ExAws.SQS.get_queue_attributes(qurl, [:QueueArn]) |>
+    case (ExAws.SQS.get_queue_attributes(qurl |> qname, [:QueueArn]) |>
       ExAws.request(region: region, access_key_id: access, secret_access_key: secret) ) do
-      {:ok, %{body: b, status_code: 200}} ->
-        {:ok, b |>
-          xpath(~x"//GetQueueAttributesResponse/GetQueueAttributesResult/Attribute[name=QueueArn]/Value/text()"s)}
+      {:ok, %{body: %{attributes: %{queue_arn: qarn}}, status_code: 200}} ->
+        {:ok, qarn}
       {:ok, %{body: b, status_code: sc}} ->
-        {:error, "Queue Attribute failed: #{sc}: #{b}"}
+        {:error, "Queue Attribute failed: #{sc}: #{inspect(b)}"}
       {:error, e} ->
         {:error, "Queue Attributes failed: #{inspect(e)}"}
     end
@@ -230,7 +253,7 @@ defmodule ExQueue.Aws do
   defp set_queue_policy({:error, e}, _, _, _, _, _, _), do: {:error, e}
   defp set_queue_policy({:ok, qarn}, qurl, tarn, region, access, secret, opts) do
     ttl = Keyword.get(opts, :ttl, 3600)
-    case (ExAws.SQS.set_queue_attributes(qurl, [{ :message_retention_period, ttl },
+    case (ExAws.SQS.set_queue_attributes(qurl |> qname, [{ :message_retention_period, ttl },
                                                 { :policy, make_queue_policy(qarn, tarn)}]) |>
       ExAws.request(region: region, access_key_id: access, secret_access_key: secret) ) do
       {:ok, %{status_code: 200}} ->
@@ -252,14 +275,45 @@ defmodule ExQueue.Aws do
   end
 
   defp add_message_if_missing(b, {id, m}) do
-    case Enum.find(b, fn {bid, _m} -> id == bid end) do
-      nil -> b ++ [{id, m}]
-      _ -> b
+    [_rhid, mid | _ ] = String.split(id, ",", parts: 2)
+    case Enum.find(b, fn {bid, _dt, _m} -> [_brhid, bmid | _] = String.split(bid, ",", parts: 2); mid == bmid end) do
+      nil -> {b ++ [{id, DateTime.utc_now |> DateTime.to_unix, m}], nil}
+      {bid, _dt, _m} ->
+        [brhid, bmid | _] = String.split(bid, ",", parts: 2)
+        {b, {brhid, bmid}}
     end
   end
 
-  defp add_if_missing(b, ml) when is_list(ml) do
-    List.foldl(ml, b, fn (m, b) -> add_message_if_missing(b, m) end)
+  def purge_buffer(b, timeout, opts \\ []) do
+    now = Keyword.get(opts, :ts, DateTime.utc_now |> DateTime.to_unix)
+    olen = Enum.count(b)
+    nb = Enum.reject(b, fn {_bid, ts, _m} -> ts < now - timeout end)
+    nlen = Enum.count(nb)
+    log(:debug, "Buffer purge complete: #{nlen} items remain from #{olen}")
+    nb
+  end
+
+  defp add_if_missing(ml, st) when is_list(ml) do
+    b = st[:buffer]
+    {b, dupl} = List.foldl(ml, {b,[]}, fn (m, {b, dupl}) -> {b, dup} = add_message_if_missing(b, m); {b, [dup | dupl]} end)
+    # drop duplicate messages from AWS, so we don't see them again
+    case Enum.reject(dupl, fn x -> x == nil end) do
+      [] -> nil
+      dl ->
+        handles = Enum.map(dl, fn {r, i} -> %{ id: i, receipt_handle: r } end)
+        case ExAws.SQS.delete_message_batch(st[:qurl] |> qname, handles) |>
+          ExAws.request(region: st[:region], access_key_id: st[:access], secret_access_key: st[:secret]) do
+          {:ok, %{body: %{successes: successes}, status_code: 200}} ->
+            if Enum.count(successes) < Enum.count(handles) do
+              log(:debug, "Result of delete duplicate message batch of #{Enum.count(handles)} in #{st[:region]}: #{Enum.count(successes)}")
+            end
+          {:ok, b = %{status_code: sc}} ->
+            log(:info, "Cannot delete duplicate messages #{inspect(handles)}: status_code: #{inspect(sc)}: #{inspect(b)}")
+          {:error, e} ->
+            log(:info, "Cannot delete duplicate messages #{inspect(handles)}: #{inspect(e)}")
+        end
+    end
+    b
   end
 
   def handle_call({:put, obj}, _from, st) when is_binary(obj) do
@@ -274,29 +328,55 @@ defmodule ExQueue.Aws do
       %{ name: "Encoding", data_type: "String",
          value: { "String", m["attributes"]["encoding"] } }
     ]
-    r = SNSFix.publish(m["body"], topic_arn: st[:tarn], message_attributes: mattrs) |>
-      ExAws.request(region: st[:region], access_key_id: st[:access], secret_access_key: st[:secret])
+    r = case SNSFix.publish(m["body"], topic_arn: st[:tarn], message_attributes: mattrs) |>
+      ExAws.request(region: st[:region], access_key_id: st[:access], secret_access_key: st[:secret]) do
+        {:ok, %{body: b, status_code: 200}} ->
+          # log(:debug, "Publish to AWS #{st[:region]} OK: #{inspect(b)}")
+          b
+        {:ok, resp = %{status_code: sc}} ->
+          log(:debug, "Publish to AWS #{st[:region]} FAIL: #{inspect(sc)}")
+          resp
+        e ->
+          log(:warn, "Publish to AWS #{st[:region]} HTTP FAIL: #{inspect(e)}")
+          e
+      end
     {:reply, r, st}
   end
 
   def handle_call({:get, num, _time}, _from, st) do
     buffer = Map.get(st, :buffer)
-    r = Enum.take(buffer, num)
+    r = Enum.take(buffer, num) |> Enum.map(fn {id, _dt, m} -> {id, m} end)
     buffer = Enum.drop(buffer, Enum.count(r))
     st = Map.put(st, :buffer, buffer)
     {:reply, r, st}
+  end
+
+  def handle_call(:purge, _from, st) do
+    {:reply, nil, Map.put(st, :buffer, purge_buffer(st[:buffer], st[:buffer_timeout]))}
+  end
+
+  def handle_call(:stats, _from, st) do
+    nun = Enum.uniq_by(st[:buffer], fn {_id, _dt, m} -> m end) |> Enum.count
+    g = Enum.group_by(st[:buffer], fn {_id, _dt, m} -> m end) |>
+      Enum.reject(fn {_k, v} -> Enum.count(v) < 2 end) |>
+      Enum.sort(fn {_k1,v1}, {_k2, v2} -> Enum.count(v1) > Enum.count(v2) end) |>
+      Enum.take(2) |>
+      Enum.into(%{})
+    {:reply, "Number of messages in buffer: #{Enum.count(st[:buffer])}. Number unique: #{nun}. Top clashes #{inspect(g)}", st}
   end
 
   def handle_call({:ack, []}, _from, st), do: {:reply, :ok, st}
   def handle_call({:ack, qidlist}, _from, st) do
     handles = Enum.map(qidlist, fn m -> String.split(m, ",") end) |>
       Enum.map(fn [r,i|_] -> %{ id: i, receipt_handle: r } end)
-    case ExAws.SQS.delete_message_batch(st[:qurl], handles) |>
+    case ExAws.SQS.delete_message_batch(st[:qurl] |> qname, handles) |>
       ExAws.request(region: st[:region], access_key_id: st[:access], secret_access_key: st[:secret]) do
-      {:ok, %{body: b, status_code: 200}} ->
-        log(:debug, "Result of delete message batch #{inspect(handles)} in #{st[:region]}: #{inspect(b)}")
+      {:ok, %{body: %{successes: successes}, status_code: 200}} ->
+        if Enum.count(successes) < Enum.count(handles) do
+          log(:debug, "Result of delete message batch of #{Enum.count(handles)} in #{st[:region]}: #{Enum.count(successes)}")
+        end
         {:reply, :ok, st}
-      {:ok, b = %{http_error: sc}} ->
+      {:ok, b = %{status_code: sc}} ->
         log(:info, "Cannot delete messages #{inspect(handles)}: status_code: #{inspect(sc)}: #{inspect(b)}")
         {:reply, :error, st}
       {:error, e} ->
@@ -308,12 +388,12 @@ defmodule ExQueue.Aws do
   def handle_call({:nack, qidlist}, _from, st) do
     handles = Enum.map(qidlist, fn m -> String.split(m, ",") end) |>
       Enum.map(fn [r,i|_] -> %{ id: i, receipt_handle: r, visibility_timeout: 0 } end)
-    case ExAws.SQS.change_message_visibility_batch(st[:qurl], handles) |>
+    case ExAws.SQS.change_message_visibility_batch(st[:qurl] |> qname, handles) |>
       ExAws.request(region: st[:region], access_key_id: st[:access], secret_access_key: st[:secret]) do
       {:ok, %{body: b, status_code: 200}} ->
         log(:debug, "Result of change visibility batch #{inspect(handles)} in #{st[:region]}: #{inspect(b)}")
         {:reply, :ok, st}
-      {:ok, b = %{http_error: sc}} ->
+      {:ok, b = %{status_code: sc}} ->
         log(:info, "Cannot change visibility for messages #{inspect(handles)}: status_code: #{inspect(sc)}: #{inspect(b)}")
         {:reply, :error, st}
       {:error, e} ->
@@ -324,7 +404,7 @@ defmodule ExQueue.Aws do
   end
 
   def handle_info({:add_messages, msgs}, st) do
-    st = Map.put(st, :buffer, add_if_missing(st[:buffer], msgs))
+    st = Map.put(st, :buffer, add_if_missing(msgs, st))
     {:noreply, st}
   end
 

@@ -30,7 +30,7 @@ defmodule ExQueue.MessageStash do
 
   def handle_call({:get, name}, _from, bufs) do
     b = Map.get(bufs, name, [])
-    Enum.each(b, fn {_qid, m} -> ConCache.delete(:nonce_cache, nonce_val(m)) end)
+    Enum.each(b, fn {_qid, m} -> ConCache.delete(:exqueue_nonce_cache, nonce_val(m)) end)
     {:reply, b, Map.delete(bufs, name)}
   end
 

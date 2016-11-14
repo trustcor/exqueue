@@ -32,7 +32,7 @@ defmodule ExQueue.Queue do
   defp encode_message(true, msg), do: {"raw", msg}
   defp encode_message(false, msg), do: {"base64", Base.encode64(msg)}
 
-  defp decorate_message(msg, nodename, attrs = %{}) when is_binary(msg) do
+  def decorate_message(msg, nodename, attrs = %{}) when is_binary(msg) do
     {enc, message} = encode_message(String.printable?(msg), msg)
     attrs = Map.put(attrs, "encoding", enc) |>
       Map.put("node", nodename) |>
@@ -121,6 +121,7 @@ defmodule ExQueue.Queue do
   defp filter_response(:duplicate, {q, qid, _msg, _attrs}), do: {q, qid}
   defp filter_response(_, m), do: m
 
+  defp partition_replies([], _skew), do: []
   defp partition_replies(rl, skew) when is_list(rl) do
     Enum.map(rl, fn {q, qid, msg, attrs} -> {tag_response(attrs, skew), q, qid, msg, attrs} end) |>
       Enum.group_by(fn {res, _q, _qid, _msg, _attrs} -> res end, fn {_res, q, qid, msg, attrs} -> {q, qid, msg, attrs} end) |>
@@ -159,7 +160,7 @@ defmodule ExQueue.Queue do
     body = decorate_message(msg, nodename(qa), attrs)
     qs = queue_servers(qa, queues) |>
       Enum.reject(fn {_q,s} -> s == nil end) |>
-      Enum.map(fn {_q,s} -> GenServer.call(s, {:put, body}) end)
+      Enum.map(fn {_q,s} -> GenServer.call(s, {:put, body}, :infinity) end)
 
     {:reply, qs, qa}
   end

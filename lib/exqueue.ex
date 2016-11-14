@@ -1,7 +1,7 @@
 defmodule ExQueue do
   use Application
 
-  # import Logger, only: [log: 2]
+  import Logger, only: [log: 2]
 
   def main(argv) do
     {options, _, _} = OptionParser.parse(argv,
@@ -61,5 +61,50 @@ defmodule ExQueue do
 
   def add_yaml_file_config(yf) do
     ExQueue.Config.read_config(yf, &File.read/1) |> add_config
+  end
+end
+
+defmodule ExQueue.StressTest do
+  import Logger, only: [log: 2]
+  alias Experimental.Flow
+
+  @test_queues ["awstest-eu1", "awstest-eu2"]
+  @test_config "config/stress.yml"
+
+  defp pubm(queues, i) do
+    ExQueue.Queue.publish(queues, "Publishing message #{i}")
+    i
+  end
+
+  defp drain_queues(queues) do
+    case ExQueue.Queue.receive_messages(queues, 10) do
+      [] ->
+        nil
+      l ->
+        ok = Keyword.get(l, :ok, []) |>
+          Enum.map(fn {_q, qm} -> Enum.map(qm, fn {_id, m, _attrs} -> m end) end) |>
+          List.flatten
+        case ok do
+          [] -> nil
+          ok ->
+            log(:debug, "Got #{Enum.count(ok)} messages from #{inspect(queues)}")
+        end
+        ExQueue.Queue.qids(l) |> ExQueue.Queue.ack
+    end
+    drain_queues(queues)
+  end
+
+  def test_pub_sub(opts \\ []) do
+    num = Keyword.get(opts, :num, 10)
+    queues = Keyword.get(opts, :queues, @test_queues)
+    Flow.from_enumerable(1..num) |> Flow.map(fn i -> pubm(queues, i) end) |> Enum.sort()
+    log(:info, "Test publish complete.")
+    :ok
+  end
+
+  def tmain(opts \\ []) do
+    ExQueue.main(["-c", @test_config])
+    queues = Keyword.get(opts, :queues, @test_queues)
+    spawn fn -> drain_queues(queues) end
   end
 end

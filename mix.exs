@@ -7,14 +7,15 @@ defmodule ExQueue.Mixfile do
      elixir: "~> 1.3",
      build_embedded: Mix.env == :prod,
      start_permanent: Mix.env == :prod,
-     escript: [main_module: ExQueue],
+     # escript: [main_module: ExQueue],
      deps: deps()]
   end
 
   def application do
     [applications: [:logger, :yamerl, :yaml_elixir, :con_cache, :poison,
-                    :timex, :amqp, :ex_aws, :sweet_xml, :briefly],
-     mod: {ExQueue, %{}}]
+                    :timex, :amqp, :ex_aws, :sweet_xml, :briefly]
+    # mod: {ExQueue, %{}}
+    ]
   end
 
   defp deps do
@@ -27,7 +28,7 @@ defmodule ExQueue.Mixfile do
       {:timex, "~> 3.0"},
       {:amqp_client, git: "https://github.com/dsrosario/amqp_client.git", branch: "erlang_otp_19", override: true},
       {:amqp, "~> 0.1.4"},
-      {:ex_aws, "~> 1.0.0-beta1"},
+      {:ex_aws, "~> 1.0.0-beta5"},
       {:sweet_xml, "~> 0.6.1"},
       {:briefly, "~> 0.3.0"}
     ]
