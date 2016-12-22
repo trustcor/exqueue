@@ -5,7 +5,7 @@ defdatabase ExQueue.LocalDB do
     @type t :: %Queues{queue_id: (integer | nil), name: String.t, expire: integer, fexpire: integer}
   end
 
-  deftable Messages, [{:msg_id, autoincrement}, :umid, :queue_id, :status, :ts, :body, :attrs], type: :ordered_set, index: [:ts, :status, :queue_id] do
+  deftable Messages, [{:msg_id, autoincrement}, :umid, :queue_id, :status, :ts, :body, :attrs], type: :ordered_set, index: [:ts, :status, :queue_id, :umid] do
     @type t :: %Messages{msg_id: (integer | nil), umid: binary, queue_id: integer, status: atom,
 			 ts: integer, body: String.t, attrs: keyword}
   end
@@ -132,16 +132,19 @@ defmodule ExQueue.Local do
 	   0 -> (DateTime.utc_now |> DateTime.to_unix) # default == now
 	   t -> t
 	 end
-    umid = Keyword.get(attrs, :umid, "")
-    
+    um = Keyword.get(attrs, :umid, "")
     attrs = Keyword.delete(attrs, :ts) |> Keyword.delete(:umid)
     Amnesia.transaction do
       qid = (Queues.where name == q, select: queue_id) |> Amnesia.Selection.values
       case qid do
 	[] -> {:error, :no_such_queue}
 	[id] when is_integer(id) ->
-	  %Messages{queue_id: id, umid: umid, body: body, ts: ts, attrs: attrs, status: :ready} |>
-	    Messages.write
+	  case Messages.where(umid == um, select: msg_id, limit: 1) |> Amnesia.Selection.values do
+	    [id] when is_integer(id) ->
+	      {:error, :message_not_unique}
+	    [] -> %Messages{queue_id: id, umid: um, body: body, ts: ts, attrs: attrs, status: :ready} |>
+		Messages.write
+	  end
       end
     end
   end

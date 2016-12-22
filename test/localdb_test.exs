@@ -75,10 +75,10 @@ defmodule LocalDBTest do
   test "test add to two queues" do
     assert ExQueue.Local.initialize_queue("foo") == 1
     assert ExQueue.Local.initialize_queue("bar") == 2
-    at = [ts: (DateTime.utc_now |> DateTime.to_unix), node: "mynode", msg_id: "fake-uuid", nonce: "fake-nonce", encoding: "raw"]
-    assert ExQueue.Local.add_message("foo", "something", at) |> Map.take([:queue_id, :msg_id]) == %{queue_id: 1, msg_id: 1}
-    assert ExQueue.Local.add_message("bar", "something else", at) |> Map.take([:queue_id, :msg_id]) == %{queue_id: 2, msg_id: 2}
-    assert ExQueue.Local.add_message("bar", "something three", at) |> Map.take([:queue_id, :msg_id]) == %{queue_id: 2, msg_id: 3}
+    at = [ts: (DateTime.utc_now |> DateTime.to_unix), node: "mynode", nonce: "fake-nonce", encoding: "raw"]
+    assert ExQueue.Local.add_message("foo", "something", Keyword.put(at, :umid, << 0, 1, 2>> )) |> Map.take([:queue_id, :msg_id]) == %{queue_id: 1, msg_id: 1}
+    assert ExQueue.Local.add_message("bar", "something else", Keyword.put(at, :umid, << 1,2,3 >>)) |> Map.take([:queue_id, :msg_id]) == %{queue_id: 2, msg_id: 2}
+    assert ExQueue.Local.add_message("bar", "something three", Keyword.put(at, :umid, << 2,3,4>>)) |> Map.take([:queue_id, :msg_id]) == %{queue_id: 2, msg_id: 3}
   end
 
   test "queue empty check" do
@@ -103,5 +103,18 @@ defmodule LocalDBTest do
     assert Enum.map(ms, fn m -> m.body end) == [ "something" ]
     ms = ExQueue.Local.get_messages("foo", 1)
     assert ms == []    
+  end
+
+  test "test uniqueness constraint" do
+    ExQueue.Local.initialize_queue("foo")
+    at = ExQueue.Local.make_attrs(%{
+	  "Encoding" => "raw",
+	  "Nonce" => "0123456",
+	  "Node" => "mynode",
+	  "Timestamp" => "2016-01-02T14:15:16Z",
+	  "MessageId" => UUID.uuid4()
+				  })
+    ExQueue.Local.add_message("foo", "something", at)
+    assert ExQueue.Local.add_message("foo", "something", at) == {:error, :message_not_unique}
   end
 end
