@@ -37,7 +37,7 @@ defmodule ExQueue.LocalSup do
 end
 
 defmodule ExQueue.Local do
-  # import Logger, only: [log: 2]
+  import Logger, only: [log: 2]
 
   use GenServer
   use ExQueue.LocalDB
@@ -64,7 +64,10 @@ defmodule ExQueue.Local do
 
   def init([cf,sname,qa]) do
     name = Map.get(cf, "name")
-    {:ok, %{ qid: initialize_queue(name) }}
+    node = Map.get(cf, "node", Agent.get(qa, fn m -> Map.get(m, :node) end))
+    Agent.update(qa, fn m -> put_in(m,[:queues, name], %{ server: sname }) end)
+    {:ok, %{ag: qa, name: name, me: node, qid: initialize_queue(name),
+            buffer: ExQueue.MessageStash.get_value(name) }}
   end
 
   def start_link(cf = %{ "name" => n}, qa) do
@@ -95,6 +98,7 @@ defmodule ExQueue.Local do
   defp process_timestamp(_), do: nil
 
   @spec process_umid(s :: any) :: (binary | nil)
+  defp process_umid(s) when is_binary(s) and byte_size(s) == 16, do: s
   defp process_umid(s) when is_binary(s) do
     # really dislike that UUID lib doesn't give an error
     # returning version of s2b. Relying on exception handling
@@ -134,16 +138,22 @@ defmodule ExQueue.Local do
 	 end
     um = Keyword.get(attrs, :umid, "")
     attrs = Keyword.delete(attrs, :ts) |> Keyword.delete(:umid)
+    log(:debug, "Attrs = #{inspect(attrs)}")
     Amnesia.transaction do
+      log(:debug, "Searching for queue #{inspect(q)}")
       qid = (Queues.where name == q, select: queue_id) |> Amnesia.Selection.values
+      log(:debug, "Searching for queue #{inspect(q)}. Result = #{inspect(qid)}")
       case qid do
 	[] -> {:error, :no_such_queue}
 	[id] when is_integer(id) ->
+	  log(:debug, "Local queue id for #{q} == #{inspect(id)}")
 	  case Messages.where(umid == um, select: msg_id, limit: 1) |> Amnesia.Selection.values do
 	    [id] when is_integer(id) ->
 	      {:error, :message_not_unique}
-	    [] -> %Messages{queue_id: id, umid: um, body: body, ts: ts, attrs: attrs, status: :ready} |>
-		Messages.write
+	    [] ->
+	      m = %Messages{queue_id: id, umid: um, body: body, ts: ts, attrs: attrs, status: :ready}
+	      log(:debug, "New message = #{inspect(m)}")
+	      Messages.write(m)
 	  end
       end
     end
@@ -176,5 +186,101 @@ defmodule ExQueue.Local do
       end
     end
   end
-  
+
+  @spec delete_messages(q :: String.t, msgs :: [ String.t ]) :: [ boolean ] | {:error, atom}
+  def delete_messages(q, msgs) do
+    Amnesia.transaction do
+      qid = (Queues.where name == q, select: queue_id) |> Amnesia.Selection.values
+      case qid do
+	[] -> {:error, :no_such_queue}
+	[id] when is_integer(id) ->
+	  Enum.map(msgs, fn m ->
+	    um = process_umid(m)
+	    ms = Messages.where(queue_id == id and umid == um) |> Amnesia.Selection.values
+	    case ms do
+	      [] -> false
+	      [msg] ->
+		Messages.delete(msg)
+		{um, :ok}
+	    end
+	  end)
+      end
+    end
+  end
+
+  @spec undelete_messages(q :: String.t, msgs :: [ String.t ]) :: [ boolean ] | {:error, atom}
+  def undelete_messages(q, msgs) do
+    Amnesia.transaction do
+      qid = (Queues.where name == q, select: queue_id) |> Amnesia.Selection.values
+      case qid do
+	[] -> {:error, :no_such_queue}
+	[id] when is_integer(id) ->
+	  Enum.map(msgs, fn m ->
+	    um = process_umid(m)
+	    ms = Messages.where(queue_id == id and status == :in_flight and umid == um) |> Amnesia.Selection.values
+	    case ms do
+	      [] ->
+		false
+	      [msg] ->
+		Messages.write(%Messages{msg | status: :ready})
+		{um, :ok}
+	    end
+	  end)
+      end
+    end
+  end
+
+  def publish(s, obj) when is_binary(obj) do
+    GenServer.call s, {:put, obj}
+  end
+
+  def killme(s) do
+    GenServer.cast s, :killme
+  end
+
+  def handle_cast(:killme, st) do
+    raise "Killing #{st[:name]} by request"
+    {:noreply, st}
+  end
+
+  def handle_call({:put, obj}, _from, st) when is_binary(obj) do
+    {:ok, m} = Poison.decode(obj)
+    at = ExQueue.Local.make_attrs(%{
+	  "Encoding" => m["attributes"]["encoding"],
+	  "Nonce" => m["attributes"]["nonce"],
+	  "Node" => m["attributes"]["node"],
+	  "Timestamp" => m["attributes"]["timestamp"],
+	  "MessageId" => m["attributes"]["messageid"] })
+    q = st[:name]
+    log(:debug, ~s(Putting message #{inspect(m["body"])} with attrs #{inspect(at)} into queue #{inspect(st[:name])}))
+    r = case add_message(q, m["body"], at) do
+	  %Messages{body: s} when is_binary(s) -> :ok
+	  e ->
+	    log(:error, "Publish Reply = #{inspect(e)}")
+	    :error
+    end
+    {:reply, r, st}
+  end
+
+  def handle_call({:get, num, _time}, _from, st) do
+    {:reply,
+     Enum.map(get_messages(st[:name], num),
+       fn m -> {m.umid, m.body} end),
+     st}
+  end
+
+  def handle_call({:ack, qidlist}, _from, st) do
+    q = st[:name]
+    {:reply, delete_messages(q, qidlist), st}
+  end
+
+  def handle_call({:nack, qidlist}, _from, st) do
+    q = st[:name]
+    {:reply, undelete_messages(q, qidlist), st}
+  end
+
+  def terminate(_reason, _st) do
+    true
+  end
+    
 end

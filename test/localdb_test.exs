@@ -5,6 +5,10 @@ defmodule LocalDBTest do
   require Amnesia.Helper
   
   import Logger, only: [log: 2]
+
+  def uu() do
+    UUID.uuid4() |> UUID.string_to_binary!()
+  end
   
   setup do
     Amnesia.Test.start
@@ -112,9 +116,54 @@ defmodule LocalDBTest do
 	  "Nonce" => "0123456",
 	  "Node" => "mynode",
 	  "Timestamp" => "2016-01-02T14:15:16Z",
-	  "MessageId" => UUID.uuid4()
+	  "MessageId" => uu,
 				  })
     ExQueue.Local.add_message("foo", "something", at)
     assert ExQueue.Local.add_message("foo", "something", at) == {:error, :message_not_unique}
+  end
+
+  test "test queue acknowledge" do
+    ExQueue.Local.initialize_queue("foo")
+    uuid = uu
+    at = ExQueue.Local.make_attrs(%{
+	  "Encoding" => "raw",
+	  "Nonce" => "0123456",
+	  "Node" => "mynode",
+	  "Timestamp" => "2016-01-02T14:15:16Z",
+	  "MessageId" => uuid })
+    ExQueue.Local.add_message("foo", "something", at)
+    uuid2 = uu
+    at2 = ExQueue.Local.make_attrs(%{
+	  "Encoding" => "raw",
+	  "Nonce" => "1234567",
+	  "Node" => "mynode",
+	  "Timestamp" => "2016-01-02T14:15:16Z",
+	  "MessageId" => uuid2 })
+    ExQueue.Local.add_message("foo", "something else", at2)
+    assert ExQueue.Local.queue_empty("foo") == false
+    assert ExQueue.Local.delete_messages("foo", [uuid, uu]) == [{uuid, :ok}, false]
+    assert ExQueue.Local.queue_empty("foo") == false
+    assert ExQueue.Local.delete_messages("foo", [uu, uuid2]) == [false, {uuid2, :ok}]
+    assert ExQueue.Local.queue_empty("foo") == true
+  end
+
+  test "test queue unacknowledge" do
+    ExQueue.Local.initialize_queue("foo")
+    uuid = uu
+    at = ExQueue.Local.make_attrs(%{
+	  "Encoding" => "raw",
+	  "Nonce" => "0123456",
+	  "Node" => "mynode",
+	  "Timestamp" => "2016-01-02T14:15:16Z",
+	  "MessageId" => uuid })
+    ExQueue.Local.add_message("foo", "something", at)
+    assert ExQueue.Local.queue_empty("foo") == false
+    
+    ms = ExQueue.Local.get_messages("foo", 1)
+    assert Enum.map(ms, fn m -> {m.body, m.umid} end) == [ {"something", uuid} ]
+    assert ExQueue.Local.get_messages("foo", 1) == []
+    assert ExQueue.Local.undelete_messages("foo", [uuid, uu]) == [{uuid, :ok}, false]
+    assert ExQueue.Local.get_messages("foo", 1) == ms
+    
   end
 end
